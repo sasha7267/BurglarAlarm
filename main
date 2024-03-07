@@ -1,0 +1,285 @@
+from gpiozero import MotionSensor
+from gpiozero import LED
+from gpiozero import Button
+from picamera import PiCamera
+import gpiozero
+from datetime import datetime
+import time
+from twilio.rest import Client
+import dropbox
+import os
+from requests.auth import HTTPBasicAuth
+import requests
+import pygame
+import sqlite3
+from tkinter import *
+from PIL import ImageTk, Image
+import RPi.GPIO as GPIO
+
+def get_dbx():
+    dropbox_app_key = "2b4mjt4d5x8fw0l"
+    dropbox_app_secret = "988qokc02g6nf6j"
+    dropbox_access_token = "sl.BZcs9AAnCDU6bGNhS5XiQUSNV99mMe5HjtTgzn3Z46eEyfpAPuHwb6MkerCaaUXzCXWyde6fyx-PdW7hMTkhxormaO4SIoReXejXrE_cWmf6f1oXMI6CBuWBMBMqThkigXDETnps6TI--i986ChwU3QwCvFe_DNI157pw7le5j1DbwbUSLVwHo6Y2tDxuA_hWJCTev6nWg8"
+    dropbox_refresh_token = "C7bZ_GTRyP8AAAAAAAAAAWj-d2rDRz-NGdQ9zEl-ekg7K5i3sYFcibbOlh8m8zB6"
+    data = {'refresh_token': dropbox_refresh_token, 'grant_type': 'refresh_token'}
+    r = requests.post('https://api.dropbox.com/oauth2/token', data=data, auth = HTTPBasicAuth(dropbox_app_key, dropbox_app_secret))
+    result = r.json()Untitled document
+    dropbox_access_token = result['access_token']
+    dbx = dropbox.Dropbox(dropbox_access_token)
+    return (dropbox_access_token)
+
+access_token = get_dbx()
+
+led = LED(17)
+pir = MotionSensor(4)
+button = gpiozero.Button(22)
+camera = PiCamera()
+
+def get_picture_name():
+    now = datetime.now()
+    return '/home/pi/Burglar/' + now.strftime("%m,%d,%Y, %H:%M:%S") + '.jpg'
+
+def get_now_str():
+    now = datetime.now()
+    return now.strftime("%m,%d,%Y, %H:%M:%S")
+        
+        
+alarm_sounds = ["iw.mp3", "Burglar.mp3"]
+stop_alarm = False
+def stop():
+    global stop_alarm
+    stop_alarm = True    
+
+def intruder_sequence(area_of_motion):
+    pygame.mixer.init()
+    pygame.mixer.music.load("/home/pi/Desktop/" + alarm_sounds[1])
+    global stop_alarm
+    stop_alarm = False
+    start_time = time.time()
+    while stop_alarm == False and time.time() - start_time < 38:
+        pygame.mixer.music.play()
+        led.on()
+        button.when_pressed = stop
+        while pygame.mixer.music.get_busy() and not stop_alarm:
+            pygame.time.Clock().tick(10)
+    pygame.mixer.music.stop()
+    led.off()
+    print("stopped")
+    main()
+    
+
+def pre_intruder_sqnce_funcs():
+    picturename = get_picture_name()
+    now_str = get_now_str()
+    
+    def takepic(pn):
+        camera.capture(pn)
+        
+
+    def dbx_func(pn):
+        burgfolder = "/home/pi/Burglar"
+        photoname = pn
+        photopath = os.path.join(burgfolder, photoname)
+        
+        dbx = dropbox.Dropbox(access_token)
+        photo = os.path.basename(photopath)
+        with open(photopath, "rb") as f:
+            dbx.files_upload(f.read(), "/burglarphotos/" + photo, mute=True)
+
+
+    print("/burglarphotos/" + now_str + ".jpg")
+
+    def send_message(pn, nstr):
+        dbx = dropbox.Dropbox(access_token)
+        account_sid = "ACebdd451e066d0e35d6c910f3c8b5a76d"
+        auth_tok = "52edf51dedb177e88cd44fa89748299d"
+        client = Client(account_sid, auth_tok)
+        print("/burglarphotos/" + nstr + ".jpg")
+        link = dbx.files_get_temporary_link("/burglarphotos/" + nstr + ".jpg").link
+        
+        message = client.messages.create(
+          body= "Motion at " + nstr,
+          from_="+18559215160",
+          to="+16514977267",
+          media_url=link
+        )
+        print(message.sid)
+        
+    
+    takepic(picturename)
+    dbx_func(picturename)
+    send_message(picturename, now_str)
+    store_to_db(human_date(datetime.now()), picturename)
+
+motionsensed = False
+actions_performed = False
+
+def button_was_pressed():
+    if button.is_pressed():
+        return True
+
+def turnmotiontrue():
+    global motionsensed
+    motionsensed = True        
+        
+def checkformotion():
+    global motionsensed
+    pir.wait_for_motion()
+    turnmotiontrue()
+    if motionsensed == True:
+        time.sleep(.1)
+        return True
+
+last_time = 11
+def main():
+    global actions_performed
+    global last_time
+    while True:
+        if checkformotion() == True and actions_performed == False and time.time() - last_time >= 15:
+            print("motion")
+            start_time = time.monotonic()
+            elapsed_time = time.monotonic() - start_time
+            
+            pre_intruder_sqnce_funcs()
+            actions_performed = True
+            last_time = time.time()
+            pygame.mixer.init()
+            pygame.mixer.music.load("/home/pi/Desktop/" + alarm_sounds[0])
+            pygame.mixer.music.play()
+            
+            if elapsed_time <= 15:
+                buttontimer = True
+                while buttontimer == True:
+                    if button.is_pressed:
+                        print("back to main")
+                        last_time=time.time()
+                        time.sleep(15)
+                        main()
+                    elif elapsed_time >= 15:
+                        print("intruder time 1")      
+                        intruder_sequence(1)
+                        last_time=time.time()
+                        break
+                    elapsed_time = time.monotonic() - start_time
+            
+            else:
+                print("intruder time 2")
+                elapsed_time = time.monotonic() - start_time
+                intruder_sequence(1)
+                last_time=time.time()
+                break
+                        
+                   
+        else:
+            actions_performed = False
+  
+  
+def gethour():
+  time = datetime.now()
+  hour = time.strftime("%H")
+  hour = int(hour) -6
+  return hour
+
+
+def store_to_db(date, path):
+    connection = sqlite3.connect("burglars.db")
+    cursor = connection.cursor()
+    cursor.execute("CREATE TABLE IF NOT EXISTS burglog (date_of TEXT, image_path TEXT)")
+    cursor.execute("INSERT INTO burglog VALUES (?, ?)", (date, path)) 
+    connection.commit()
+     
+     
+def human_date(dt):
+    month_names = [
+        'January', 'February', 'March', 'April', 'May', 'June', 
+        'July', 'August', 'September', 'October', 'November', 'December'
+    ]
+    
+    month = month_names[dt.month - 1]
+    
+    day = str(dt.day)
+    if day.endswith('1') and day != '11':
+        day += 'st'
+    elif day.endswith('2') and day != '12':
+        day += 'nd'
+    elif day.endswith('3') and day != '13':
+        day += 'rd'
+    else:
+        day += 'th'
+    
+    year = str(dt.year)
+    
+    hour = dt.strftime('%I')
+    minute = dt.strftime('%M')
+    am_pm = dt.strftime('%p').lower()
+    
+    return f"{month}, {day}, {year} at {hour}:{minute}{am_pm}"
+
+
+def display_info(root, frame):
+    connection = sqlite3.connect("burglars.db")
+    cursor = connection.cursor()
+   
+    cursor.execute("SELECT date_of, image_path FROM burglog")
+    rows = cursor.fetchall()
+
+    num_columns = 2
+    row_count = 0
+    col_count = 0
+
+    for row in rows:
+        date, image_path = row
+        if row_count >= 13:
+            row_count = 0
+            col_count += 1
+
+        Label(frame, text=f"Date: {date}").grid(row=row_count, column=col_count*2)
+
+        image = Image.open(image_path)
+        image.thumbnail((100, 100))
+        photo = ImageTk.PhotoImage(image)
+        label = Label(frame, image=photo)
+        label.image = photo
+        label.grid(row=row_count, column=col_count*2 + 1)
+
+        row_count += 1
+
+    connection.close()
+
+
+def certain_hours(start, end):
+    while True:
+        while start <= gethour() < end:
+            main()
+  
+  
+def all_hours():
+    while True:
+        main()
+
+
+def interaction():
+    choice1 = input("enter 1 to set activation times, enter 2 to set permanent activation, enter 3 to set permanent inactivation, enter 4 to view photos")
+    choice1 = int(choice1)
+    if choice1 == 1:
+        starttime=input("what time would you like the alarm to start (24hr and do not include 0s before single digits)")
+        endtime=input("what time would you like the alarm to end")
+        starttime = int(starttime)
+        endtime = int(endtime)
+        certain_hours(starttime, endtime)
+    elif choice1 == 2:
+        all_hours()
+    elif choice1 == 3:
+        nothing = "happening"
+    elif choice1 == 4:
+        root = Tk()
+        root.title("Burglar Alarm Data")
+        frame = Frame(root)
+        frame.pack()
+        display_info(root, frame)
+        root.mainloop()
+    else:
+        interaction()
+
+led.off()
+interaction()
